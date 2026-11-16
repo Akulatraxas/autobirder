@@ -11,7 +11,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -234,6 +234,10 @@ def create_app(data_dir: Path, cache_dir: Path, predictor: Predictor | None = No
     def rescan():
         index.rescan()
         return {"count": len(index.ids())}
+
+    @app.get("/healthz")
+    def healthz():
+        return {"status": "ok"}
 
     @app.get("/")
     def root():
