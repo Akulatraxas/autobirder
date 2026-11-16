@@ -15,10 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt constraints.txt /app/
+COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch==2.15.0 torchvision==0.29.2 --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir -r requirements.txt -c constraints.txt
+    pip install --no-cache-dir -r requirements.txt
 
 # world-writable so the app also works when started with `--user uid:gid`
 RUN mkdir -p /app/hf_cache /cache && chmod 777 /app/hf_cache /cache
