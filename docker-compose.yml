@@ -1,0 +1,42 @@
+# Quick start:
+#   1. cp .env.example .env   (and set PHOTOS_DIR)
+#   2. docker compose up -d
+#
+# WARNING: PHOTOS_DIR is mounted read-write and modified in place when you save tags.
+
+services:
+  autobirder:
+    # Override AUTOBIRDER_IMAGE in .env to use a local build or specific version tag.
+    image: ${AUTOBIRDER_IMAGE:-ghcr.io/akulatraxas/autobirder:latest}
+    # Uncomment to build locally instead of pulling from GHCR:
+    # build: .
+
+    # Match your host user so modified photos keep your file ownership.
+    # Use PUID=0 / PGID=0 only if your mount requires root (e.g. SMB in WSL).
+    # For rootless podman-compose, you may also need: userns_mode: "keep-id"
+    user: "${PUID:-1000}:${PGID:-1000}"
+
+    ports:
+      # Bound to localhost only: the app has no authentication.
+      - "127.0.0.1:${PORT:-8000}:8000"
+
+    volumes:
+      - "${PHOTOS_DIR:?Set PHOTOS_DIR in .env or the environment}:/data"
+      - "autobirder_cache:/cache"
+      - "bioclip_cache:/app/hf_cache"
+
+    environment:
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    restart: unless-stopped
+
+volumes:
+  autobirder_cache:
+  bioclip_cache:
