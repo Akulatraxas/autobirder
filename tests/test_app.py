@@ -1,4 +1,3 @@
-import io
 import time
 from pathlib import Path
 
@@ -116,6 +115,9 @@ def test_security(env):
     assert "script-src 'self'" in r.headers["content-security-policy"]
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["x-frame-options"] == "DENY"
+    # healthcheck
+    hz = c.get("/healthz")
+    assert hz.status_code == 200 and hz.json() == {"status": "ok"}
     # validation
     big = {"fields": {"description": "x" * 5000}}
     assert c.post(f"/api/images/{iid}/save", json=big, headers=H).status_code == 422
