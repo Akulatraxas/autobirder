@@ -40,6 +40,61 @@ function toast(msg, isErr = false) {
   toastTimer = setTimeout(() => { t.hidden = true; }, isErr ? 4000 : 1400);
 }
 
+// ---------- model status ----------
+let modelStatus = null;
+let modelPollTimer = null;
+
+function clearModelPoll() {
+  if (modelPollTimer !== null) {
+    clearTimeout(modelPollTimer);
+    modelPollTimer = null;
+  }
+}
+
+function scheduleModelPoll() {
+  if (modelPollTimer !== null) return;
+  modelPollTimer = setTimeout(async () => {
+    modelPollTimer = null;
+    await pollModelStatus();
+  }, 1000);
+}
+
+function applyModelStatus(m) {
+  if (!m) return;
+  const badge = $("model-status");
+  const prev = modelStatus;
+  modelStatus = m.status;
+  badge.hidden = false;
+  if (m.status === "loading") {
+    const secs = typeof m.elapsed_s === "number" ? ` (${m.elapsed_s}s)` : "";
+    badge.textContent = `Model loading${secs}…`;
+    badge.className = "model-status loading";
+    badge.title = "Loading BioCLIP model (first run downloads ~4 GB of weights).";
+    scheduleModelPoll();
+  } else if (m.status === "ready") {
+    badge.textContent = "Model ready";
+    badge.className = "model-status ready";
+    badge.title = "BioCLIP model is loaded and ready.";
+    clearModelPoll();
+    if (prev === "loading") toast("BioCLIP model ready");
+  } else {
+    badge.textContent = "Model load failed";
+    badge.className = "model-status err";
+    badge.title = "Failed to load BioCLIP model. Check server logs.";
+    clearModelPoll();
+  }
+}
+
+async function pollModelStatus() {
+  clearModelPoll();
+  try {
+    const d = await api("/api/status");
+    applyModelStatus(d.model);
+  } catch (e) {
+    scheduleModelPoll();
+  }
+}
+
 // ---------- list ----------
 function renderList() {
   const nav = $("list");
@@ -127,15 +182,27 @@ async function refresh(i, token) {
   }
   if (token !== state.token) return;
   state.detail = d;
+  if (d.model) applyModelStatus(d.model);
   renderCandidates();
   renderCurrent();
+  const modelState = d.model ? d.model.status : modelStatus;
   if (d.status === "ready") {
     $("status").textContent = d.candidates.length ? "" : "No guesses returned.";
     if (!state.touched && d.candidates.length) selectCandidate(0, true);
   } else if (d.status === "error") {
-    $("status").textContent = "Classification failed. Enter tags manually (N).";
+    $("status").textContent = modelState === "error"
+      ? "Model failed to load. Enter tags manually (N) or check logs."
+      : "Classification failed. Enter tags manually (N).";
   } else {
-    $("status").textContent = d.status === "classifying" ? "Classifying…" : "Queued…";
+    if (d.status === "classifying") {
+      $("status").textContent = modelState === "loading"
+        ? "Loading model (downloading on first run)…"
+        : "Classifying…";
+    } else {
+      $("status").textContent = modelState === "loading"
+        ? "Waiting for model to load (downloading on first run)…"
+        : "Queued…";
+    }
     state.pollTimer = setTimeout(() => refresh(i, token), 600);
   }
 }
@@ -508,6 +575,7 @@ async function init() {
   $("rescan").addEventListener("click", async () => {
     try { await api("/api/rescan", {}); await loadList(true); toast("Rescanned"); } catch (e) { toast("Rescan failed", true); }
   });
+  pollModelStatus();
   await loadList(false);
 }
 

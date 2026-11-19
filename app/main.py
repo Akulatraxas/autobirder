@@ -130,6 +130,10 @@ def create_app(data_dir: Path, cache_dir: Path, predictor: Predictor | None = No
         except (KeyError, OSError):
             raise HTTPException(404, "Not found")
 
+    @app.get("/api/status")
+    def app_status():
+        return {"model": worker.model_info()}
+
     @app.get("/api/images")
     def list_images():
         marks = store.get_marks()
@@ -151,6 +155,7 @@ def create_app(data_dir: Path, cache_dir: Path, predictor: Predictor | None = No
             "candidates": worker.candidates(image_id) if status == "ready" else [],
             "current": _fields_json(read_fields(path)),
             "mark": store.get_mark(rel),
+            "model": worker.model_info(),
         }
 
     @app.get("/api/images/{image_id}/status")
@@ -248,7 +253,18 @@ def create_app(data_dir: Path, cache_dir: Path, predictor: Predictor | None = No
     return app
 
 
+def _configure_logging() -> None:
+    pkg_log = logging.getLogger("autobirder")
+    if not pkg_log.handlers and not logging.getLogger().handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+        pkg_log.addHandler(handler)
+    if pkg_log.level == logging.NOTSET:
+        pkg_log.setLevel(logging.INFO)
+
+
 def _from_env() -> FastAPI:
+    _configure_logging()
     hosts = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
     return create_app(
         Path(os.environ.get("DATA_DIR", "/data")),

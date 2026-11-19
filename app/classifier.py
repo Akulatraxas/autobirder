@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Protocol
 
 from .scanner import ImageIndex, signature
@@ -10,7 +11,7 @@ from .store import Store
 
 log = logging.getLogger("autobirder.classifier")
 
-TOP_K = 10
+TOP_K = 5
 
 
 class Predictor(Protocol):
@@ -29,12 +30,13 @@ class BioclipPredictor:
     def load(self) -> None:
         with self._lock:
             if self._clf is None:
+                t0 = time.monotonic()
+                log.info("Loading BioCLIP model (first run downloads ~4 GB of weights)...")
                 from bioclip import Rank, TreeOfLifeClassifier  # heavy import
 
-                log.info("Loading BioCLIP model...")
                 self._clf = TreeOfLifeClassifier()
                 self._rank = Rank.SPECIES
-                log.info("BioCLIP model loaded")
+                log.info("BioCLIP model loaded in %.1fs", time.monotonic() - t0)
 
     def predict(self, path: str) -> list[dict]:
         self.load()
@@ -66,13 +68,27 @@ class Worker:
         self._cond = threading.Condition()
         self._prio: list[str] = []
         self._state: dict[str, str] = {}  # id -> "classifying" | "error"
+        has_loader = callable(getattr(predictor, "load", None))
+        self._model_status = "loading" if has_loader else "ready"
+        self._model_started: float | None = time.monotonic() if has_loader else None
+        self._load_done: threading.Event | None = None
         self._stop = False
         self._thread = threading.Thread(target=self._run, name="classifier", daemon=True)
         self._thread.start()
 
+    def model_info(self) -> dict[str, str | int]:
+        """Return current model status ('loading' | 'ready' | 'error') and elapsed_s while loading."""
+        with self._cond:
+            info: dict[str, str | int] = {"status": self._model_status}
+            if self._model_status == "loading" and self._model_started is not None:
+                info["elapsed_s"] = max(0, int(time.monotonic() - self._model_started))
+            return info
+
     def shutdown(self) -> None:
         with self._cond:
             self._stop = True
+            if self._load_done is not None:
+                self._load_done.set()
             self._cond.notify_all()
 
     def prioritize(self, ids: list[str]) -> None:
@@ -115,11 +131,44 @@ class Worker:
             return image_id
         return None
 
+    def _load_model(self, loader) -> None:
+        done = threading.Event()
+        with self._cond:
+            self._model_status = "loading"
+            if self._model_started is None:
+                self._model_started = time.monotonic()
+            self._load_done = done
+
+        def heartbeat() -> None:
+            while not done.wait(30.0):
+                with self._cond:
+                    if self._stop or self._model_status != "loading" or self._model_started is None:
+                        return
+                    elapsed = int(time.monotonic() - self._model_started)
+                log.info("Still loading BioCLIP model (%ds elapsed)...", elapsed)
+
+        threading.Thread(target=heartbeat, name="classifier-heartbeat", daemon=True).start()
+        try:
+            loader()
+            with self._cond:
+                self._model_status = "ready"
+                self._model_started = None
+        except Exception:
+            with self._cond:
+                self._model_status = "error"
+                self._model_started = None
+            raise
+        finally:
+            done.set()
+            with self._cond:
+                if self._load_done is done:
+                    self._load_done = None
+
     def _run(self) -> None:
         loader = getattr(self._predictor, "load", None)
         if callable(loader):
             try:
-                loader()
+                self._load_model(loader)
             except Exception:
                 log.exception("Model preload failed; will retry on first job")
         while True:
@@ -133,7 +182,10 @@ class Worker:
                 if self._stop:
                     return
                 self._state[image_id] = "classifying"
+                need_load = callable(loader) and self._model_status != "ready"
             try:
+                if need_load:
+                    self._load_model(loader)
                 path = self._index.path(image_id)
                 rel = self._index.rel(image_id)
                 sig = signature(path)

@@ -1,3 +1,4 @@
+import threading
 import time
 from pathlib import Path
 
@@ -71,6 +72,7 @@ def test_metadata_roundtrip(tmp_path, name, fmt):
 
 def test_api_flow(env):
     data, c, pred = env
+    assert c.get("/api/status").json() == {"model": {"status": "ready"}}
     imgs = c.get("/api/images").json()["images"]
     assert [i["path"] for i in imgs] == ["a/img2.JPG", "a/img10.jpg", "b/pic.png"]
     iid = imgs[0]["id"]
@@ -155,6 +157,84 @@ def test_keyword_autocomplete(env):
     assert "Garden" not in sug()
     assert c.post("/api/keywords/forget", json={"keyword": "x"}).status_code == 403  # CSRF header
     assert c.get("/api/keywords", params={"q": "x" * 200}).status_code == 422
+
+
+def test_model_status_loading_and_ready(tmp_path):
+    data = tmp_path / "data"
+    make_img(data / "a.jpg")
+    gate = threading.Event()
+
+    class SlowLoadPredictor(FakePredictor):
+        def load(self):
+            gate.wait(timeout=5)
+
+    app = create_app(data, tmp_path / "cache", SlowLoadPredictor())
+    try:
+        c = TestClient(app, base_url="http://localhost")
+        st = c.get("/api/status")
+        assert st.status_code == 200
+        assert st.json()["model"]["status"] == "loading"
+        assert isinstance(st.json()["model"]["elapsed_s"], int)
+
+        iid = c.get("/api/images").json()["images"][0]["id"]
+        c.post("/api/prioritize", json={"ids": [iid]}, headers=H)
+        d = c.get(f"/api/images/{iid}").json()
+        assert d["status"] == "pending"
+        assert d["model"]["status"] == "loading"
+
+        gate.set()
+        for _ in range(50):
+            st = c.get("/api/status").json()
+            d = c.get(f"/api/images/{iid}").json()
+            if st["model"]["status"] == "ready" and d["status"] == "ready":
+                break
+            time.sleep(0.05)
+        assert st["model"] == {"status": "ready"}
+        assert d["status"] == "ready" and d["model"] == {"status": "ready"}
+    finally:
+        gate.set()
+        app.state.worker.shutdown()
+
+
+def test_model_status_error_and_retry(tmp_path):
+    data = tmp_path / "data"
+    make_img(data / "a.jpg")
+
+    class FlakyLoadPredictor(FakePredictor):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+            self.first_done = threading.Event()
+
+        def load(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                self.first_done.set()
+                raise RuntimeError("download failed")
+
+    pred = FlakyLoadPredictor()
+    app = create_app(data, tmp_path / "cache", pred)
+    try:
+        c = TestClient(app, base_url="http://localhost")
+        assert pred.first_done.wait(timeout=5)
+        for _ in range(50):
+            st = c.get("/api/status").json()
+            if st["model"]["status"] == "error":
+                break
+            time.sleep(0.05)
+        assert st["model"] == {"status": "error"}
+
+        iid = c.get("/api/images").json()["images"][0]["id"]
+        c.post("/api/prioritize", json={"ids": [iid]}, headers=H)
+        for _ in range(50):
+            d = c.get(f"/api/images/{iid}").json()
+            if d["status"] == "ready":
+                break
+            time.sleep(0.05)
+        assert d["status"] == "ready"
+        assert c.get("/api/status").json()["model"] == {"status": "ready"}
+    finally:
+        app.state.worker.shutdown()
 
 
 def test_no_innerhtml():
