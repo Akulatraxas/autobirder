@@ -5,6 +5,8 @@ Intitially this was just a small cli tool that helped me not getting mad with ta
 
 It will probably also work for plants as the model has training data for it, but I have not tested that as I am a bird photographer.
 
+![Autobirder Picture](doc/autobirder_example.jpg?raw=true "Autobirder GUI")
+
 > [!WARNING]
 > **Photos are modified in place.** Saving writes tags directly to the image files and overwrites existing values in those fields. **Make a backup** (or test on a copy) before pointing it at your photo library.
 
@@ -113,7 +115,7 @@ There is **no authentication**. Both `docker-compose.yml` and `run.sh` publish t
   - Compose: set `PUID=0` and `PGID=0` in `.env`
   - `run.sh`: `RUN_AS_ROOT=1 ./run.sh /path/to/photos`
 - **Rootless `podman-compose` file ownership:** If modified files appear owned by a subuid, uncomment `userns_mode: "keep-id"` in `docker-compose.yml`.
-- **First image stays on "classifying" for a while:** On the very first run, the container is downloading ~4 GB of model weights and loading them into RAM. Check `docker compose logs -f` to follow progress.
+- **Model still loading on startup:** On the very first run, the container downloads ~4 GB of model weights and loads them into RAM. The header badge shows `Model loading…` until it becomes `Model ready`; you can also follow `docker compose logs -f` for loading status.
 - **400 Bad Request (`Invalid Host header`):** Add the hostname you access the app with to `ALLOWED_HOSTS`.
 
 ## Tests
